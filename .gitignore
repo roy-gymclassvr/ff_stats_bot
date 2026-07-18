@@ -1,0 +1,11 @@
+# Secrets / credentials — never commit
+.env
+service_account.json
+
+# Runtime state
+run_state.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc

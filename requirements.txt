@@ -1,0 +1,5 @@
+discord.py==2.7.1
+python-dotenv==1.2.2
+google-auth==2.56.0
+google-api-python-client==2.198.0
+requests==2.34.2
