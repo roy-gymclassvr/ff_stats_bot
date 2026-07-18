@@ -9,3 +9,6 @@ run_state.json
 .venv/
 __pycache__/
 *.pyc
+
+# IDE
+.idea/
