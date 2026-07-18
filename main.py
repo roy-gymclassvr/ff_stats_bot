@@ -555,7 +555,11 @@ async def on_ready():
         return
 
     spreadsheet = await loop.run_in_executor(
-        None, lambda: service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+        None,
+        lambda: service.spreadsheets().get(
+            spreadsheetId=SPREADSHEET_ID,
+            fields="sheets.properties(title,sheetId,gridProperties)",
+        ).execute(),
     )
     existing_names = set()
     template_sheet_id = None
