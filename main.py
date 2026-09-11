@@ -1,5 +1,4 @@
 import asyncio
-import json
 import math
 import os
 import re
@@ -18,12 +17,13 @@ import requests
 from google.auth.transport.requests import AuthorizedSession
 from googleapiclient.discovery import build
 
+from season import SETTINGS_RANGE, SETTINGS_SHEET_NAME, parse_settings, week_number
+
 # --- Config ---
 THREAD_ID = 1049862491628376095
 SPREADSHEET_ID = '1yxGmKTN27i9XtOefErIXKgcbfi1EXJHYWH7wZn_Cnok'
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 SERVICE_ACCOUNT_FILE = "service_account.json"
-STATE_PATH = "run_state.json"
 DRY_RUN = "--dry-run" in sys.argv or os.environ.get("DRY_RUN") == "1"
 
 # --- Constants ---
@@ -32,8 +32,6 @@ RANK_ROLE_IDS = {1379598755560685568, 1379598705283432509, 1379598636068896828}
 EMOJI_INCLUDE = {"✅", "➖"}
 EMOJI_REJECT = "❌"
 RETRYABLE_ERRORS = ("Rate Limit", "Quota", "429", "503")
-SHEET_PATTERN = re.compile(r'^S(\d+)W(\d+)$')
-WEEKS_PER_SEASON = 4
 STAT_COLUMNS = 5  # Points, Blocks, Steals, Wins, Games Played (sheet columns B-F)
 MIN_GAMES_FOR_MMR = 5
 DISCORD_ID_SHEET_NAME = "Discord IDs"
@@ -55,41 +53,6 @@ def get_date_range():
     start = today - timedelta(days=days_back)
     end = today.replace(hour=23, minute=59, second=59)
     return start, end
-
-
-def load_state():
-    if os.path.exists(STATE_PATH):
-        with open(STATE_PATH) as f:
-            return json.load(f)
-    return {}
-
-
-def save_state(week_start, sheet_name, season_sheet_name):
-    with open(STATE_PATH, 'w') as f:
-        json.dump({'week_start': week_start, 'sheet_name': sheet_name, 'season_sheet_name': season_sheet_name}, f)
-
-
-def get_next_sheet_name(sheet_names):
-    """
-    Find the latest S#W# sheet and return the next (week_sheet, season_sheet).
-    E.g. if the latest is S5W4, returns ('S6W1', 'Season 6').
-    """
-    season_week_pairs = [
-        (int(m.group(1)), int(m.group(2)))
-        for name in sheet_names
-        if (m := SHEET_PATTERN.match(name))
-    ]
-    if not season_week_pairs:
-        return "S1W1", "Season 1"
-
-    season, week = max(season_week_pairs)
-    if week >= WEEKS_PER_SEASON:
-        season += 1
-        week = 1
-    else:
-        week += 1
-
-    return f"S{season}W{week}", f"Season {season}"
 
 
 class _HttpResponse:
@@ -365,6 +328,21 @@ async def load_discord_id_map(service):
         return {}
 
 
+async def load_season_settings(service):
+    """Read the season number and week 1 start date that staff set in the sheet."""
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=SETTINGS_RANGE,
+            valueRenderOption="UNFORMATTED_VALUE",
+            dateTimeRenderOption="SERIAL_NUMBER",
+        ).execute()
+    )
+    return parse_settings(result.get('values', []))
+
+
 async def merge_rank_and_write(service, sheet_name, new_rows, discord_id_map, max_retries=5):
     """
     Merge new_rows into the sheet's existing A:F data, dedupe by name, recompute MMR,
@@ -575,17 +553,19 @@ async def on_ready():
             template_frozen_rows = grid.get('frozenRowCount', 1)
 
     start_date, end_date = get_date_range()
-    state = load_state()
-    if state.get('week_start') == str(start_date.date()):
-        sheet_name = state['sheet_name']
-        season_sheet_name = state['season_sheet_name']
-        print("Resuming existing week sheets.")
-    else:
-        sheet_name, season_sheet_name = get_next_sheet_name(existing_names)
-        if DRY_RUN:
-            print(f"[dry-run] Would save run_state.json: week_start={start_date.date()}, sheet_name={sheet_name}, season_sheet_name={season_sheet_name}")
-        else:
-            save_state(str(start_date.date()), sheet_name, season_sheet_name)
+    try:
+        season, season_start = await load_season_settings(service)
+    except Exception as e:
+        print(f"Exiting: could not read '{SETTINGS_SHEET_NAME}' (B1 season number, B2 week 1 start date): {e}")
+        await bot.close()
+        return
+    week = week_number(start_date.date(), season_start)
+    if week is None:
+        print(f"Exiting: week of {start_date.date()} is outside Season {season} (week 1 started {season_start}). "
+              f"Set the new season number and start date in '{SETTINGS_SHEET_NAME}'.")
+        await bot.close()
+        return
+    sheet_name, season_sheet_name = f"S{season}W{week}", f"Season {season}"
     print(f"Date range  : {start_date.date()} (Wed) → {end_date.date()} (Tue)")
     print(f"Week sheet  : {sheet_name}")
     print(f"Season sheet: {season_sheet_name}")
@@ -608,9 +588,7 @@ async def on_ready():
     await update_attendance(service, included, str(start_date.date()))
 
     # Check the previous week in this season for newly approved stats
-    m = SHEET_PATTERN.match(sheet_name)
-    current_week = int(m.group(2)) if m else 1
-    if current_week > 1:
+    if week > 1:
         prev_start = start_date - timedelta(weeks=1)
         prev_end = start_date
         prev_messages = [msg async for msg in channel.history(limit=None, after=prev_start, before=prev_end)]
@@ -636,11 +614,12 @@ async def on_ready():
 
     print("Upload complete.")
 
-    if m and int(m.group(2)) == 1:
+    if week == 1:
         print("Week 1 detected — stripping rank roles from all members...")
         await strip_rank_roles(channel.guild)
 
     await bot.close()
 
 
-bot.run(os.environ["DISCORD_BOT_TOKEN"])
+if __name__ == "__main__":
+    bot.run(os.environ["DISCORD_BOT_TOKEN"])
