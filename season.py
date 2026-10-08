@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta
 WEEKS_PER_SEASON = 4
 SETTINGS_SHEET_NAME = "Season Settings"
 SETTINGS_RANGE = f"'{SETTINGS_SHEET_NAME}'!B1:B2"  # B1: season number, B2: week 1 start date
+STATUS_RANGE = f"'{SETTINGS_SHEET_NAME}'!A6:B6"  # where the bot reports what it last did
 SHEETS_EPOCH = date(1899, 12, 30)  # Google Sheets date serial 0
 DATE_FORMATS = ("%Y-%m-%d", "%m/%d/%Y")
 
@@ -23,6 +24,18 @@ def week_number(week_start, season_start):
     """Return the 1-based week of the season for week_start, or None if it falls outside the season."""
     index = (week_start - season_start).days // 7
     return index + 1 if 0 <= index < WEEKS_PER_SEASON else None
+
+
+def waiting_status(week_start, season, season_start, now):
+    """Status text for a week that falls outside the season staff have set."""
+    return (f"WAITING: the week of {week_start} is outside Season {season} "
+            f"(week 1 started {season_start}). Set B1 and B2 above for the next season. "
+            f"No stats are being recorded. Last checked {now:%Y-%m-%d %H:%M} ET.")
+
+
+def wrote_status(sheet_name, rows, now):
+    """Status text for a successful run."""
+    return f"OK: {sheet_name} updated at {now:%Y-%m-%d %H:%M} ET ({rows} new row(s) this run)."
 
 
 def _parse_season(raw):

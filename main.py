@@ -17,7 +17,8 @@ import requests
 from google.auth.transport.requests import AuthorizedSession
 from googleapiclient.discovery import build
 
-from season import SETTINGS_RANGE, SETTINGS_SHEET_NAME, parse_settings, week_number
+from season import (SETTINGS_RANGE, SETTINGS_SHEET_NAME, STATUS_RANGE, parse_settings,
+                    waiting_status, week_number, wrote_status)
 
 # --- Config ---
 THREAD_ID = 1049862491628376095
@@ -36,6 +37,7 @@ STAT_COLUMNS = 5  # Points, Blocks, Steals, Wins, Games Played (sheet columns B-
 MIN_GAMES_FOR_MMR = 5
 DISCORD_ID_SHEET_NAME = "Discord IDs"
 SNOWFLAKE_RE = re.compile(r'^\d{17,19}$')
+EASTERN = ZoneInfo("America/New_York")
 
 # --- Discord setup ---
 intents = discord.Intents.default()
@@ -47,8 +49,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 def get_date_range():
     """Return (start, end) Eastern datetimes: last Wednesday through today (Tuesday)."""
-    eastern = ZoneInfo("America/New_York")
-    today = datetime.now(eastern).replace(hour=0, minute=0, second=0, microsecond=0)
+    today = datetime.now(EASTERN).replace(hour=0, minute=0, second=0, microsecond=0)
     days_back = (today.weekday() - 2) % 7  # Wednesday = weekday 2
     start = today - timedelta(days=days_back)
     end = today.replace(hour=23, minute=59, second=59)
@@ -328,6 +329,26 @@ async def load_discord_id_map(service):
         return {}
 
 
+async def write_status(service, text):
+    """Report what the bot just did into the settings tab. Never fatal: status is not the job."""
+    if DRY_RUN:
+        print(f"[dry-run] Would write status: {text}")
+        return
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(
+            None,
+            lambda: service.spreadsheets().values().update(
+                spreadsheetId=SPREADSHEET_ID,
+                range=STATUS_RANGE,
+                valueInputOption="RAW",
+                body={'values': [["Bot status (auto)", text]]},
+            ).execute()
+        )
+    except Exception as e:
+        print(f"Could not write bot status: {e}")
+
+
 async def load_season_settings(service):
     """Read the season number and week 1 start date that staff set in the sheet."""
     loop = asyncio.get_running_loop()
@@ -561,8 +582,9 @@ async def on_ready():
         return
     week = week_number(start_date.date(), season_start)
     if week is None:
-        print(f"Exiting: week of {start_date.date()} is outside Season {season} (week 1 started {season_start}). "
-              f"Set the new season number and start date in '{SETTINGS_SHEET_NAME}'.")
+        status = waiting_status(start_date.date(), season, season_start, datetime.now(EASTERN))
+        print(f"Exiting: {status}")
+        await write_status(service, status)
         await bot.close()
         return
     sheet_name, season_sheet_name = f"S{season}W{week}", f"Season {season}"
@@ -612,6 +634,7 @@ async def on_ready():
     await merge_rank_and_write(service, sheet_name, rows, discord_id_map)
     await merge_rank_and_write(service, season_sheet_name, rows, discord_id_map)
 
+    await write_status(service, wrote_status(sheet_name, len(rows), datetime.now(EASTERN)))
     print("Upload complete.")
 
     if week == 1:

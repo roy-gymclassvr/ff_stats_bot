@@ -1,7 +1,7 @@
 import unittest
-from datetime import date
+from datetime import date, datetime
 
-from season import parse_settings, week_number
+from season import parse_settings, waiting_status, week_number, wrote_status
 
 
 class WeekNumberTest(unittest.TestCase):
@@ -38,3 +38,20 @@ class ParseSettingsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StatusTextTest(unittest.TestCase):
+    NOW = datetime(2026, 10, 7, 23, 0)
+
+    def test_waiting_names_the_cells_and_the_gap(self):
+        text = waiting_status(date(2026, 9, 30), 45, date(2026, 9, 2), self.NOW)
+        self.assertIn("2026-09-30", text)
+        self.assertIn("Season 45", text)
+        self.assertIn("B1 and B2", text)
+        self.assertIn("2026-10-07 23:00 ET", text)
+
+    def test_ok_names_the_sheet_and_rows(self):
+        text = wrote_status("S46W1", 157, self.NOW)
+        self.assertIn("S46W1", text)
+        self.assertIn("157", text)
+        self.assertIn("2026-10-07 23:00 ET", text)
