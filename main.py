@@ -426,91 +426,6 @@ async def merge_rank_and_write(service, sheet_name, new_rows, discord_id_map, ma
         print(f"[{sheet_name}] Failed to write merged data after {max_retries} retries.")
 
 
-async def update_attendance(service, included_messages, date_label):
-    """Update the attendance sheet with submission counts per official for a given date."""
-    submission_counts = {}
-    for msg in included_messages:
-        discord_id = str(msg.author.id)
-        name = getattr(msg.author, 'display_name', msg.author.name)
-        if discord_id not in submission_counts:
-            submission_counts[discord_id] = {'name': name, 'count': 0}
-        submission_counts[discord_id]['count'] += 1
-
-    if not submission_counts:
-        return
-
-    loop = asyncio.get_running_loop()
-    sheets_api = service.spreadsheets()
-
-    try:
-        result = await loop.run_in_executor(
-            None,
-            lambda: sheets_api.values().get(
-                spreadsheetId=SPREADSHEET_ID,
-                range="attendance"
-            ).execute()
-        )
-        existing = result.get('values', [])
-    except Exception as e:
-        print(f"Could not read attendance sheet: {e}")
-        return
-
-    if not existing:
-        existing = [["Name", "Discord ID"]]
-
-    header_row = existing[0]
-
-    if date_label in header_row:
-        date_col_idx = header_row.index(date_label)
-    else:
-        date_col_idx = len(header_row)
-        header_row.append(date_label)
-
-    id_to_row = {}
-    for i in range(1, len(existing)):
-        row = existing[i]
-        if len(row) >= 2 and row[1]:
-            id_to_row[row[1]] = i
-
-    for discord_id, info in submission_counts.items():
-        if discord_id in id_to_row:
-            row_idx = id_to_row[discord_id]
-        else:
-            existing.append([info['name'], discord_id])
-            row_idx = len(existing) - 1
-            id_to_row[discord_id] = row_idx
-
-        row = existing[row_idx]
-        while len(row) <= date_col_idx:
-            row.append('')
-        try:
-            prior_count = int(row[date_col_idx]) if row[date_col_idx] != '' else 0
-        except (ValueError, TypeError):
-            prior_count = 0
-        row[date_col_idx] = prior_count + info['count']
-
-    if DRY_RUN:
-        print(f"[dry-run] Would update attendance column '{date_label}' for {len(submission_counts)} official(s):")
-        for discord_id, info in submission_counts.items():
-            row = existing[id_to_row[discord_id]]
-            print(f"    {info['name']} ({discord_id}): {row[date_col_idx]} (+{info['count']} new)")
-        return
-
-    try:
-        await loop.run_in_executor(
-            None,
-            lambda: sheets_api.values().update(
-                spreadsheetId=SPREADSHEET_ID,
-                range="attendance!A1",
-                valueInputOption="RAW",
-                body={'values': existing}
-            ).execute()
-        )
-        print(f"Attendance updated: {len(submission_counts)} official(s) for {date_label}.")
-    except Exception as e:
-        print(f"Failed to update attendance sheet: {e}")
-
-
 async def strip_rank_roles(guild):
     """Remove all rank roles from every member in the guild (season reset)."""
     removed = 0
@@ -607,8 +522,6 @@ async def on_ready():
 
     rows = parse_messages(included)
 
-    await update_attendance(service, included, str(start_date.date()))
-
     # Check the previous week in this season for newly approved stats
     if week > 1:
         prev_start = start_date - timedelta(weeks=1)
@@ -619,7 +532,6 @@ async def on_ready():
         if late_rows:
             print(f"Late approvals from 1 week ago: {len(late_rows)} row(s)")
             rows.extend(late_rows)
-            await update_attendance(service, prev_included, str(prev_start.date()))
 
     print(f"Total rows to upload: {len(rows)}")
 
